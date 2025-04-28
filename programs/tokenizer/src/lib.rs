@@ -22,6 +22,8 @@ pub mod tokenizer {
         ctx: Context<MintTokens>,
         amount: u64,
     ) -> Result<()> {
+        require!(amount > 0, TokenizerError::ZeroAmount);
+
         let cpi_accounts = token::MintTo {
             mint: ctx.accounts.mint.to_account_info(),
             to: ctx.accounts.token_account.to_account_info(),
@@ -50,6 +52,8 @@ pub mod tokenizer {
         ctx: Context<BurnTokens>,
         amount: u64,
     ) -> Result<()> {
+        require!(amount > 0, TokenizerError::ZeroAmount);
+
         let cpi_accounts = token::Burn {
             mint: ctx.accounts.mint.to_account_info(),
             from: ctx.accounts.token_account.to_account_info(),
@@ -94,4 +98,10 @@ pub struct BurnTokens<'info> {
     /// The SPL Token program
     /// CHECK: This is the token program
     pub token_program: Program<'info, Token>,
+}
+
+#[error_code]
+pub enum TokenizerError {
+    #[msg("Amount must be greater than zero")]
+    ZeroAmount,
 }
