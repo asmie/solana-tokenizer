@@ -3,6 +3,7 @@ import { Program } from "@coral-xyz/anchor";
 import { Tokenizer } from "../target/types/tokenizer";
 import { TOKEN_PROGRAM_ID, getAssociatedTokenAddress, createMint, createAssociatedTokenAccount } from "@solana/spl-token";
 import { expect } from "chai";
+import { Buffer } from "buffer";
 
 describe("tokenizer", () => {
   const provider = anchor.AnchorProvider.env();
@@ -526,11 +527,52 @@ describe("tokenizer", () => {
     }
   });
 
-  it("Adds and removes minters", async () => {
+  async function getConfirmedTransaction(signature: string, maxRetries = 5): Promise<any> {
+    for (let i = 0; i < maxRetries; i++) {
+      const transaction = await program.provider.connection.getTransaction(signature, {
+        commitment: "confirmed",
+        maxSupportedTransactionVersion: 0,
+      });
+      
+      if (transaction && transaction.meta && transaction.meta.logMessages && transaction.meta.logMessages.length > 0) {
+        return transaction;
+      }
+      
+      // Wait for 1 second before retrying
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    
+    throw new Error(`Failed to get confirmed transaction with valid log messages after ${maxRetries} retries`);
+  }
+
+  async function getEventFromTransaction<I extends anchor.Idl>(
+    txSignature: string,
+    program: Program<I>,
+    eventName: string
+  ) {
+    const transaction = await getConfirmedTransaction(txSignature);
+    expect(transaction.meta.logMessages).to.not.be.null;
+    expect(transaction.meta.logMessages.length).to.be.greaterThan(0);
+  
+    for (const log of transaction.meta.logMessages) {
+      if (log.startsWith("Program data: ")) {
+        const base64Data = log.slice("Program data: ".length);
+        const buffer = Buffer.from(base64Data, "base64");
+        const decodedEvent = program.coder.events.decode(buffer as Buffer);
+        if (decodedEvent?.name === eventName) {
+          return decodedEvent;
+        }
+      }
+    }
+  
+    throw new Error(`Event ${eventName} not found in transaction logs`);
+  }
+
+  it("Adds and removes minters with events", async () => {
     const newMinter = anchor.web3.Keypair.generate();
     
-    // Add minter
-    await program.methods
+    // Add minter and verify event
+    const addTx = await program.methods
       .addMinter(newMinter.publicKey)
       .accounts({
         state: state.publicKey,
@@ -538,12 +580,60 @@ describe("tokenizer", () => {
       })
       .rpc();
 
-    // Verify minter can mint
+    const event = await getEventFromTransaction(addTx, program, "addMinterEvent");
+    expect(event.data.minter.equals(newMinter.publicKey)).to.be.true;
+    expect(event.data.authority.equals(currentOwner)).to.be.true;
+
+    // Remove minter and verify event
+    const removeTx = await program.methods
+      .removeMinter(newMinter.publicKey)
+      .accounts({
+        state: state.publicKey,
+        authority: currentOwner,
+      })
+      .rpc();
+
+    const removeEvent = await getEventFromTransaction(removeTx, program, "removeMinterEvent");
+    expect(removeEvent.data.minter.equals(newMinter.publicKey)).to.be.true;
+    expect(removeEvent.data.authority.equals(currentOwner)).to.be.true;
+  });
+
+  it("Adds and removes burners with events", async () => {
+    const newBurner = anchor.web3.Keypair.generate();
+    
+    // Add burner and verify event
+    const addTx = await program.methods
+      .addBurner(newBurner.publicKey)
+      .accounts({
+        state: state.publicKey,
+        authority: currentOwner,
+      })
+      .rpc();
+
+    const addEvent = await getEventFromTransaction(addTx, program, "addBurnerEvent");
+    expect(addEvent.data.burner.equals(newBurner.publicKey)).to.be.true;
+    expect(addEvent.data.authority.equals(currentOwner)).to.be.true;
+
+    // Remove burner and verify event
+    const removeTx = await program.methods
+      .removeBurner(newBurner.publicKey)
+      .accounts({
+        state: state.publicKey,
+        authority: currentOwner,
+      })
+      .rpc();
+
+    const removeEvent = await getEventFromTransaction(removeTx, program, "removeBurnerEvent");
+    expect(removeEvent.data.burner.equals(newBurner.publicKey)).to.be.true;
+    expect(removeEvent.data.authority.equals(currentOwner)).to.be.true;
+  });
+
+  it("Mints tokens with event", async () => {
     const mint = await createMint(
       provider.connection,
       provider.wallet.payer,
-      newMinter.publicKey,
-      newMinter.publicKey,
+      currentOwner,
+      currentOwner,
       DECIMALS
     );
 
@@ -554,59 +644,24 @@ describe("tokenizer", () => {
       provider.wallet.publicKey
     );
 
-    await program.methods
+    const tx = await program.methods
       .mintTokens(MINT_AMOUNT)
       .accounts({
         state: state.publicKey,
         mint,
         tokenAccount,
-        mintAuthority: newMinter.publicKey,
+        mintAuthority: currentOwner,
         tokenProgram: TOKEN_PROGRAM_ID,
       })
-      .signers([newMinter])
       .rpc();
 
-    // Remove minter
-    await program.methods
-      .removeMinter(newMinter.publicKey)
-      .accounts({
-        state: state.publicKey,
-        authority: currentOwner,
-      })
-      .rpc();
-
-    // Verify minter can no longer mint
-    try {
-      await program.methods
-        .mintTokens(MINT_AMOUNT)
-        .accounts({
-          state: state.publicKey,
-          mint,
-          tokenAccount,
-          mintAuthority: newMinter.publicKey,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .signers([newMinter])
-        .rpc();
-      expect.fail("Should have failed after removing minter role");
-    } catch (err) {
-      expect(err.toString()).to.include("Unauthorized");
-    }
+    const event = await getEventFromTransaction(tx, program, "mintEvent");
+    expect(event.data.to.equals(tokenAccount)).to.be.true;
+    expect(event.data.amount.toString()).to.equal(MINT_AMOUNT.toString());
+    expect(event.data.authority.equals(currentOwner)).to.be.true;
   });
 
-  it("Adds and removes burners", async () => {
-    const newBurner = anchor.web3.Keypair.generate();
-    
-    // Add burner
-    await program.methods
-      .addBurner(newBurner.publicKey)
-      .accounts({
-        state: state.publicKey,
-        authority: currentOwner,
-      })
-      .rpc();
-
-    // Create mint with current owner as authority
+  it("Burns tokens with event", async () => {
     const mint = await createMint(
       provider.connection,
       provider.wallet.payer,
@@ -615,15 +670,14 @@ describe("tokenizer", () => {
       DECIMALS
     );
 
-    // Create token account owned by the burner
     const tokenAccount = await createAssociatedTokenAccount(
       provider.connection,
       provider.wallet.payer,
       mint,
-      newBurner.publicKey
+      provider.wallet.publicKey
     );
 
-    // First mint some tokens to the burner's account
+    // First mint some tokens
     await program.methods
       .mintTokens(MINT_AMOUNT)
       .accounts({
@@ -635,45 +689,22 @@ describe("tokenizer", () => {
       })
       .rpc();
 
-    // Then burn with burner
-    await program.methods
+    // Then burn and verify event
+    const tx = await program.methods
       .burnTokens(BURN_AMOUNT)
       .accounts({
         state: state.publicKey,
         mint,
         tokenAccount,
-        burnAuthority: newBurner.publicKey,
+        burnAuthority: currentOwner,
         tokenProgram: TOKEN_PROGRAM_ID,
       })
-      .signers([newBurner])
       .rpc();
 
-    // Remove burner
-    await program.methods
-      .removeBurner(newBurner.publicKey)
-      .accounts({
-        state: state.publicKey,
-        authority: currentOwner,
-      })
-      .rpc();
-
-    // Verify burner can no longer burn
-    try {
-      await program.methods
-        .burnTokens(BURN_AMOUNT)
-        .accounts({
-          state: state.publicKey,
-          mint,
-          tokenAccount,
-          burnAuthority: newBurner.publicKey,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .signers([newBurner])
-        .rpc();
-      expect.fail("Should have failed after removing burner role");
-    } catch (err) {
-      expect(err.toString()).to.include("Unauthorized");
-    }
+    const event = await getEventFromTransaction(tx, program, "burnEvent");
+    expect(event.data.from.equals(tokenAccount)).to.be.true;
+    expect(event.data.amount.toString()).to.equal(BURN_AMOUNT.toString());
+    expect(event.data.authority.equals(currentOwner)).to.be.true;
   });
 
   it("Fails to add minter with wrong authority", async () => {

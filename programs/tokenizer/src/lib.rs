@@ -3,15 +3,85 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount};
 
 declare_id!("97p5HxyC14H8f9ykCVLiB4giqnzw3oEYo6sTGjKVsP8a");
 
+/// Event emitted when tokens are minted
+#[event]
+pub struct MintEvent {
+    /// The token account receiving the minted tokens
+    pub to: Pubkey,
+    /// The amount of tokens minted
+    pub amount: u64,
+    /// The timestamp when the minting occurred
+    pub timestamp: i64,
+    /// The authority that authorized the minting
+    pub authority: Pubkey,
+}
+
+/// Event emitted when tokens are burned
+#[event]
+pub struct BurnEvent {
+    /// The token account losing the burned tokens
+    pub from: Pubkey,
+    /// The amount of tokens burned
+    pub amount: u64,
+    /// The timestamp when the burning occurred
+    pub timestamp: i64,
+    /// The authority that authorized the burning
+    pub authority: Pubkey,
+}
+
+/// Event emitted when a minter is added
+#[event]
+pub struct AddMinterEvent {
+    /// The account being added as a minter
+    pub minter: Pubkey,
+    /// The authority that added the minter
+    pub authority: Pubkey,
+    /// The timestamp when the minter was added
+    pub timestamp: i64,
+}
+
+/// Event emitted when a minter is removed
+#[event]
+pub struct RemoveMinterEvent {
+    /// The account being removed as a minter
+    pub minter: Pubkey,
+    /// The authority that removed the minter
+    pub authority: Pubkey,
+    /// The timestamp when the minter was removed
+    pub timestamp: i64,
+}
+
+/// Event emitted when a burner is added
+#[event]
+pub struct AddBurnerEvent {
+    /// The account being added as a burner
+    pub burner: Pubkey,
+    /// The authority that added the burner
+    pub authority: Pubkey,
+    /// The timestamp when the burner was added
+    pub timestamp: i64,
+}
+
+/// Event emitted when a burner is removed
+#[event]
+pub struct RemoveBurnerEvent {
+    /// The account being removed as a burner
+    pub burner: Pubkey,
+    /// The authority that removed the burner
+    pub authority: Pubkey,
+    /// The timestamp when the burner was removed
+    pub timestamp: i64,
+}
+
 #[program]
 pub mod tokenizer {
     use super::*;
 
     /// Initializes the tokenizer program.
-    /// 
+    ///
     /// # Arguments
     /// * `ctx` - The context containing the state account and owner
-    /// 
+    ///
     /// # Errors
     /// Returns an error if:
     /// * The state account cannot be initialized
@@ -27,11 +97,11 @@ pub mod tokenizer {
     }
 
     /// Adds a new minter to the list of authorized minters.
-    /// 
+    ///
     /// # Arguments
     /// * `ctx` - The context containing the state account and authority
     /// * `minter` - The public key of the account to add as a minter
-    /// 
+    ///
     /// # Errors
     /// Returns an error if:
     /// * The authority is not the owner or admin
@@ -39,21 +109,31 @@ pub mod tokenizer {
     pub fn add_minter(ctx: Context<AddMinter>, minter: Pubkey) -> Result<()> {
         let state = &mut ctx.accounts.state;
         require!(
-            state.owner == ctx.accounts.authority.key() || 
-            state.admin == ctx.accounts.authority.key(),
+            state.owner == ctx.accounts.authority.key()
+                || state.admin == ctx.accounts.authority.key(),
             TokenizerError::Unauthorized
         );
-        require!(!state.minters.contains(&minter), TokenizerError::AlreadyExists);
+        require!(
+            !state.minters.contains(&minter),
+            TokenizerError::AlreadyExists
+        );
         state.minters.push(minter);
+
+        emit!(AddMinterEvent {
+            minter,
+            authority: ctx.accounts.authority.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
         Ok(())
     }
 
     /// Removes a minter from the list of authorized minters.
-    /// 
+    ///
     /// # Arguments
     /// * `ctx` - The context containing the state account and authority
     /// * `minter` - The public key of the account to remove from minters
-    /// 
+    ///
     /// # Errors
     /// Returns an error if:
     /// * The authority is not the owner or admin
@@ -61,22 +141,32 @@ pub mod tokenizer {
     pub fn remove_minter(ctx: Context<RemoveMinter>, minter: Pubkey) -> Result<()> {
         let state = &mut ctx.accounts.state;
         require!(
-            state.owner == ctx.accounts.authority.key() || 
-            state.admin == ctx.accounts.authority.key(),
+            state.owner == ctx.accounts.authority.key()
+                || state.admin == ctx.accounts.authority.key(),
             TokenizerError::Unauthorized
         );
-        let index = state.minters.iter().position(|&x| x == minter)
+        let index = state
+            .minters
+            .iter()
+            .position(|&x| x == minter)
             .ok_or(TokenizerError::NotFound)?;
         state.minters.remove(index);
+
+        emit!(RemoveMinterEvent {
+            minter,
+            authority: ctx.accounts.authority.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
         Ok(())
     }
 
     /// Adds a new burner to the list of authorized burners.
-    /// 
+    ///
     /// # Arguments
     /// * `ctx` - The context containing the state account and authority
     /// * `burner` - The public key of the account to add as a burner
-    /// 
+    ///
     /// # Errors
     /// Returns an error if:
     /// * The authority is not the owner or admin
@@ -84,21 +174,31 @@ pub mod tokenizer {
     pub fn add_burner(ctx: Context<AddBurner>, burner: Pubkey) -> Result<()> {
         let state = &mut ctx.accounts.state;
         require!(
-            state.owner == ctx.accounts.authority.key() || 
-            state.admin == ctx.accounts.authority.key(),
+            state.owner == ctx.accounts.authority.key()
+                || state.admin == ctx.accounts.authority.key(),
             TokenizerError::Unauthorized
         );
-        require!(!state.burners.contains(&burner), TokenizerError::AlreadyExists);
+        require!(
+            !state.burners.contains(&burner),
+            TokenizerError::AlreadyExists
+        );
         state.burners.push(burner);
+
+        emit!(AddBurnerEvent {
+            burner,
+            authority: ctx.accounts.authority.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
         Ok(())
     }
 
     /// Removes a burner from the list of authorized burners.
-    /// 
+    ///
     /// # Arguments
     /// * `ctx` - The context containing the state account and authority
     /// * `burner` - The public key of the account to remove from burners
-    /// 
+    ///
     /// # Errors
     /// Returns an error if:
     /// * The authority is not the owner or admin
@@ -106,22 +206,32 @@ pub mod tokenizer {
     pub fn remove_burner(ctx: Context<RemoveBurner>, burner: Pubkey) -> Result<()> {
         let state = &mut ctx.accounts.state;
         require!(
-            state.owner == ctx.accounts.authority.key() || 
-            state.admin == ctx.accounts.authority.key(),
+            state.owner == ctx.accounts.authority.key()
+                || state.admin == ctx.accounts.authority.key(),
             TokenizerError::Unauthorized
         );
-        let index = state.burners.iter().position(|&x| x == burner)
+        let index = state
+            .burners
+            .iter()
+            .position(|&x| x == burner)
             .ok_or(TokenizerError::NotFound)?;
         state.burners.remove(index);
+
+        emit!(RemoveBurnerEvent {
+            burner,
+            authority: ctx.accounts.authority.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
         Ok(())
     }
 
     /// Mints new tokens to a specified token account.
-    /// 
+    ///
     /// # Arguments
     /// * `ctx` - The context containing the mint, token account, and authority
     /// * `amount` - The number of tokens to mint (in base units)
-    /// 
+    ///
     /// # Errors
     /// Returns an error if:
     /// * The amount is zero
@@ -133,9 +243,9 @@ pub mod tokenizer {
         let state = &ctx.accounts.state;
         require!(!state.paused, TokenizerError::Paused);
         require!(
-            state.owner == ctx.accounts.mint_authority.key() || 
-            state.admin == ctx.accounts.mint_authority.key() ||
-            state.minters.contains(&ctx.accounts.mint_authority.key()),
+            state.owner == ctx.accounts.mint_authority.key()
+                || state.admin == ctx.accounts.mint_authority.key()
+                || state.minters.contains(&ctx.accounts.mint_authority.key()),
             TokenizerError::Unauthorized
         );
 
@@ -149,15 +259,22 @@ pub mod tokenizer {
         let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
         token::mint_to(cpi_ctx, amount)?;
 
+        emit!(MintEvent {
+            to: ctx.accounts.token_account.key(),
+            amount,
+            timestamp: Clock::get()?.unix_timestamp,
+            authority: ctx.accounts.mint_authority.key(),
+        });
+
         Ok(())
     }
 
     /// Burns tokens from a specified token account.
-    /// 
+    ///
     /// # Arguments
     /// * `ctx` - The context containing the mint, token account, and authority
     /// * `amount` - The number of tokens to burn (in base units)
-    /// 
+    ///
     /// # Errors
     /// Returns an error if:
     /// * The amount is zero
@@ -169,9 +286,9 @@ pub mod tokenizer {
         let state = &ctx.accounts.state;
         require!(!state.paused, TokenizerError::Paused);
         require!(
-            state.owner == ctx.accounts.burn_authority.key() || 
-            state.admin == ctx.accounts.burn_authority.key() ||
-            state.burners.contains(&ctx.accounts.burn_authority.key()),
+            state.owner == ctx.accounts.burn_authority.key()
+                || state.admin == ctx.accounts.burn_authority.key()
+                || state.burners.contains(&ctx.accounts.burn_authority.key()),
             TokenizerError::Unauthorized
         );
 
@@ -185,23 +302,29 @@ pub mod tokenizer {
         let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
         token::burn(cpi_ctx, amount)?;
 
+        emit!(BurnEvent {
+            from: ctx.accounts.token_account.key(),
+            amount,
+            timestamp: Clock::get()?.unix_timestamp,
+            authority: ctx.accounts.burn_authority.key(),
+        });
+
         Ok(())
     }
 
     /// Sets the paused state of the contract.
-    /// 
+    ///
     /// # Arguments
     /// * `ctx` - The context containing the state account and owner
     /// * `paused` - The new paused state
-    /// 
+    ///
     /// # Errors
     /// Returns an error if:
     /// * The caller is not the owner
     pub fn set_paused(ctx: Context<SetPaused>, paused: bool) -> Result<()> {
         let state = &mut ctx.accounts.state;
         require!(
-            state.owner == ctx.accounts.owner.key() || 
-            state.admin == ctx.accounts.owner.key(),
+            state.owner == ctx.accounts.owner.key() || state.admin == ctx.accounts.owner.key(),
             TokenizerError::Unauthorized
         );
         state.paused = paused;
@@ -209,11 +332,11 @@ pub mod tokenizer {
     }
 
     /// Sets a new owner for the contract.
-    /// 
+    ///
     /// # Arguments
     /// * `ctx` - The context containing the state account and current owner
     /// * `new_owner` - The public key of the new owner
-    /// 
+    ///
     /// # Errors
     /// Returns an error if:
     /// * The caller is not the current owner
