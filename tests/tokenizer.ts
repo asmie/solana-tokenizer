@@ -100,7 +100,7 @@ describe("tokenizer", () => {
     }
   });
 
-  it("Mints tokens", async () => {
+  it("Mints tokens with owner", async () => {
     const mint = await createMint(
       provider.connection,
       provider.wallet.payer,
@@ -123,11 +123,56 @@ describe("tokenizer", () => {
         mint,
         tokenAccount,
         mintAuthority: currentOwner,
+        tokenProgram: TOKEN_PROGRAM_ID,
       })
       .rpc();
 
     const balance = await provider.connection.getTokenAccountBalance(tokenAccount);
     expect(balance.value.amount).to.equal(MINT_AMOUNT.toString());
+  });
+
+  it("Burns tokens with owner", async () => {
+    const mint = await createMint(
+      provider.connection,
+      provider.wallet.payer,
+      currentOwner,
+      currentOwner,
+      DECIMALS
+    );
+
+    const tokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      provider.wallet.publicKey
+    );
+
+    // First mint some tokens
+    await program.methods
+      .mintTokens(MINT_AMOUNT)
+      .accounts({
+        state: state.publicKey,
+        mint,
+        tokenAccount,
+        mintAuthority: currentOwner,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc();
+
+    // Then burn some tokens
+    await program.methods
+      .burnTokens(BURN_AMOUNT)
+      .accounts({
+        state: state.publicKey,
+        mint,
+        tokenAccount,
+        burnAuthority: currentOwner,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc();
+
+    const balance = await provider.connection.getTokenAccountBalance(tokenAccount);
+    expect(balance.value.amount).to.equal(MINT_AMOUNT.sub(BURN_AMOUNT).toString());
   });
 
   it("Fails to mint tokens with wrong authority", async () => {
@@ -162,48 +207,6 @@ describe("tokenizer", () => {
     } catch (err) {
       expect(err.toString()).to.include("Unauthorized");
     }
-  });
-
-  it("Burns tokens", async () => {
-    const mint = await createMint(
-      provider.connection,
-      provider.wallet.payer,
-      currentOwner,
-      currentOwner,
-      DECIMALS
-    );
-
-    const tokenAccount = await createAssociatedTokenAccount(
-      provider.connection,
-      provider.wallet.payer,
-      mint,
-      provider.wallet.publicKey
-    );
-
-    // First mint some tokens
-    await program.methods
-      .mintTokens(MINT_AMOUNT)
-      .accounts({
-        state: state.publicKey,
-        mint,
-        tokenAccount,
-        mintAuthority: currentOwner,
-      })
-      .rpc();
-
-    // Then burn some tokens
-    await program.methods
-      .burnTokens(BURN_AMOUNT)
-      .accounts({
-        state: state.publicKey,
-        mint,
-        tokenAccount,
-        burnAuthority: currentOwner,
-      })
-      .rpc();
-
-    const balance = await provider.connection.getTokenAccountBalance(tokenAccount);
-    expect(balance.value.amount).to.equal(MINT_AMOUNT.sub(BURN_AMOUNT).toString());
   });
 
   it("Fails to burn tokens with wrong authority", async () => {
@@ -520,6 +523,282 @@ describe("tokenizer", () => {
       expect.fail("Should have failed with wrong authority");
     } catch (err) {
       expect(err.toString()).to.include("Unauthorized");
+    }
+  });
+
+  it("Adds and removes minters", async () => {
+    const newMinter = anchor.web3.Keypair.generate();
+    
+    // Add minter
+    await program.methods
+      .addMinter(newMinter.publicKey)
+      .accounts({
+        state: state.publicKey,
+        authority: currentOwner,
+      })
+      .rpc();
+
+    // Verify minter can mint
+    const mint = await createMint(
+      provider.connection,
+      provider.wallet.payer,
+      newMinter.publicKey,
+      newMinter.publicKey,
+      DECIMALS
+    );
+
+    const tokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      provider.wallet.publicKey
+    );
+
+    await program.methods
+      .mintTokens(MINT_AMOUNT)
+      .accounts({
+        state: state.publicKey,
+        mint,
+        tokenAccount,
+        mintAuthority: newMinter.publicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([newMinter])
+      .rpc();
+
+    // Remove minter
+    await program.methods
+      .removeMinter(newMinter.publicKey)
+      .accounts({
+        state: state.publicKey,
+        authority: currentOwner,
+      })
+      .rpc();
+
+    // Verify minter can no longer mint
+    try {
+      await program.methods
+        .mintTokens(MINT_AMOUNT)
+        .accounts({
+          state: state.publicKey,
+          mint,
+          tokenAccount,
+          mintAuthority: newMinter.publicKey,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([newMinter])
+        .rpc();
+      expect.fail("Should have failed after removing minter role");
+    } catch (err) {
+      expect(err.toString()).to.include("Unauthorized");
+    }
+  });
+
+  it("Adds and removes burners", async () => {
+    const newBurner = anchor.web3.Keypair.generate();
+    
+    // Add burner
+    await program.methods
+      .addBurner(newBurner.publicKey)
+      .accounts({
+        state: state.publicKey,
+        authority: currentOwner,
+      })
+      .rpc();
+
+    // Create mint with current owner as authority
+    const mint = await createMint(
+      provider.connection,
+      provider.wallet.payer,
+      currentOwner,
+      currentOwner,
+      DECIMALS
+    );
+
+    // Create token account owned by the burner
+    const tokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      newBurner.publicKey
+    );
+
+    // First mint some tokens to the burner's account
+    await program.methods
+      .mintTokens(MINT_AMOUNT)
+      .accounts({
+        state: state.publicKey,
+        mint,
+        tokenAccount,
+        mintAuthority: currentOwner,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc();
+
+    // Then burn with burner
+    await program.methods
+      .burnTokens(BURN_AMOUNT)
+      .accounts({
+        state: state.publicKey,
+        mint,
+        tokenAccount,
+        burnAuthority: newBurner.publicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([newBurner])
+      .rpc();
+
+    // Remove burner
+    await program.methods
+      .removeBurner(newBurner.publicKey)
+      .accounts({
+        state: state.publicKey,
+        authority: currentOwner,
+      })
+      .rpc();
+
+    // Verify burner can no longer burn
+    try {
+      await program.methods
+        .burnTokens(BURN_AMOUNT)
+        .accounts({
+          state: state.publicKey,
+          mint,
+          tokenAccount,
+          burnAuthority: newBurner.publicKey,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([newBurner])
+        .rpc();
+      expect.fail("Should have failed after removing burner role");
+    } catch (err) {
+      expect(err.toString()).to.include("Unauthorized");
+    }
+  });
+
+  it("Fails to add minter with wrong authority", async () => {
+    const wrongAuthority = anchor.web3.Keypair.generate();
+    const newMinter = anchor.web3.Keypair.generate();
+    
+    try {
+      await program.methods
+        .addMinter(newMinter.publicKey)
+        .accounts({
+          state: state.publicKey,
+          authority: wrongAuthority.publicKey,
+        })
+        .signers([wrongAuthority])
+        .rpc();
+      expect.fail("Should have failed with wrong authority");
+    } catch (err) {
+      expect(err.toString()).to.include("Unauthorized");
+    }
+  });
+
+  it("Fails to add burner with wrong authority", async () => {
+    const wrongAuthority = anchor.web3.Keypair.generate();
+    const newBurner = anchor.web3.Keypair.generate();
+    
+    try {
+      await program.methods
+        .addBurner(newBurner.publicKey)
+        .accounts({
+          state: state.publicKey,
+          authority: wrongAuthority.publicKey,
+        })
+        .signers([wrongAuthority])
+        .rpc();
+      expect.fail("Should have failed with wrong authority");
+    } catch (err) {
+      expect(err.toString()).to.include("Unauthorized");
+    }
+  });
+
+  it("Fails to remove non-existent minter", async () => {
+    const nonExistentMinter = anchor.web3.Keypair.generate();
+    
+    try {
+      await program.methods
+        .removeMinter(nonExistentMinter.publicKey)
+        .accounts({
+          state: state.publicKey,
+          authority: currentOwner,
+        })
+        .rpc();
+      expect.fail("Should have failed with non-existent minter");
+    } catch (err) {
+      expect(err.toString()).to.include("NotFound");
+    }
+  });
+
+  it("Fails to remove non-existent burner", async () => {
+    const nonExistentBurner = anchor.web3.Keypair.generate();
+    
+    try {
+      await program.methods
+        .removeBurner(nonExistentBurner.publicKey)
+        .accounts({
+          state: state.publicKey,
+          authority: currentOwner,
+        })
+        .rpc();
+      expect.fail("Should have failed with non-existent burner");
+    } catch (err) {
+      expect(err.toString()).to.include("NotFound");
+    }
+  });
+
+  it("Fails to add duplicate minter", async () => {
+    const newMinter = anchor.web3.Keypair.generate();
+    
+    // Add minter first time
+    await program.methods
+      .addMinter(newMinter.publicKey)
+      .accounts({
+        state: state.publicKey,
+        authority: currentOwner,
+      })
+      .rpc();
+
+    // Try to add again
+    try {
+      await program.methods
+        .addMinter(newMinter.publicKey)
+        .accounts({
+          state: state.publicKey,
+          authority: currentOwner,
+        })
+        .rpc();
+      expect.fail("Should have failed with duplicate minter");
+    } catch (err) {
+      expect(err.toString()).to.include("AlreadyExists");
+    }
+  });
+
+  it("Fails to add duplicate burner", async () => {
+    const newBurner = anchor.web3.Keypair.generate();
+    
+    // Add burner first time
+    await program.methods
+      .addBurner(newBurner.publicKey)
+      .accounts({
+        state: state.publicKey,
+        authority: currentOwner,
+      })
+      .rpc();
+
+    // Try to add again
+    try {
+      await program.methods
+        .addBurner(newBurner.publicKey)
+        .accounts({
+          state: state.publicKey,
+          authority: currentOwner,
+        })
+        .rpc();
+      expect.fail("Should have failed with duplicate burner");
+    } catch (err) {
+      expect(err.toString()).to.include("AlreadyExists");
     }
   });
 }); 
