@@ -445,4 +445,81 @@ describe("tokenizer", () => {
       }
     }
   });
+
+  it("Sets paused state", async () => {
+    await program.methods
+      .setPaused(true)
+      .accounts({
+        state: state.publicKey,
+        owner: currentOwner,
+      })
+      .rpc();
+
+    const mint = await createMint(
+      provider.connection,
+      provider.wallet.payer,
+      currentOwner,
+      currentOwner,
+      DECIMALS
+    );
+
+    const tokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      provider.wallet.publicKey
+    );
+
+    try {
+      await program.methods
+        .mintTokens(MINT_AMOUNT)
+        .accounts({
+          state: state.publicKey,
+          mint,
+          tokenAccount,
+          mintAuthority: currentOwner,
+        })
+        .rpc();
+      expect.fail("Should have failed when paused");
+    } catch (err) {
+      expect(err.toString()).to.include("Paused");
+    }
+
+    // Unpause
+    await program.methods
+      .setPaused(false)
+      .accounts({
+        state: state.publicKey,
+        owner: currentOwner,
+      })
+      .rpc();
+
+    // Should work again
+    await program.methods
+      .mintTokens(MINT_AMOUNT)
+      .accounts({
+        state: state.publicKey,
+        mint,
+        tokenAccount,
+        mintAuthority: currentOwner,
+      })
+      .rpc();
+  });
+
+  it("Fails to set paused state with wrong authority", async () => {
+    const wrongAuthority = anchor.web3.Keypair.generate();
+    try {
+      await program.methods
+        .setPaused(true)
+        .accounts({
+          state: state.publicKey,
+          owner: wrongAuthority.publicKey,
+        })
+        .signers([wrongAuthority])
+        .rpc();
+      expect.fail("Should have failed with wrong authority");
+    } catch (err) {
+      expect(err.toString()).to.include("Unauthorized");
+    }
+  });
 }); 

@@ -10,6 +10,8 @@ pub mod tokenizer {
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
         let state = &mut ctx.accounts.state;
         state.owner = ctx.accounts.owner.key();
+        state.admin = ctx.accounts.owner.key(); // Initially set admin to owner
+        state.paused = false; // Initially not paused
         Ok(())
     }
 
@@ -20,6 +22,17 @@ pub mod tokenizer {
             TokenizerError::Unauthorized
         );
         state.owner = new_owner;
+        Ok(())
+    }
+
+    pub fn set_paused(ctx: Context<SetPaused>, paused: bool) -> Result<()> {
+        let state = &mut ctx.accounts.state;
+        require!(
+            state.owner == ctx.accounts.owner.key() || 
+            state.admin == ctx.accounts.owner.key(),
+            TokenizerError::Unauthorized
+        );
+        state.paused = paused;
         Ok(())
     }
 
@@ -36,8 +49,11 @@ pub mod tokenizer {
     /// * The token program call fails
     pub fn mint_tokens(ctx: Context<MintTokens>, amount: u64) -> Result<()> {
         require!(amount > 0, TokenizerError::ZeroAmount);
+        let state = &ctx.accounts.state;
+        require!(!state.paused, TokenizerError::Paused);
         require!(
-            ctx.accounts.state.owner == ctx.accounts.mint_authority.key(),
+            state.owner == ctx.accounts.mint_authority.key() || 
+            state.admin == ctx.accounts.mint_authority.key(),
             TokenizerError::Unauthorized
         );
 
@@ -67,8 +83,11 @@ pub mod tokenizer {
     /// * The token program call fails
     pub fn burn_tokens(ctx: Context<BurnTokens>, amount: u64) -> Result<()> {
         require!(amount > 0, TokenizerError::ZeroAmount);
+        let state = &ctx.accounts.state;
+        require!(!state.paused, TokenizerError::Paused);
         require!(
-            ctx.accounts.state.owner == ctx.accounts.burn_authority.key(),
+            state.owner == ctx.accounts.burn_authority.key() || 
+            state.admin == ctx.accounts.burn_authority.key(),
             TokenizerError::Unauthorized
         );
 
@@ -89,6 +108,8 @@ pub mod tokenizer {
 #[account]
 pub struct State {
     pub owner: Pubkey,
+    pub admin: Pubkey,
+    pub paused: bool,
 }
 
 /// Accounts required for initializing the contract.
@@ -97,7 +118,7 @@ pub struct Initialize<'info> {
     #[account(
         init,
         payer = owner,
-        space = 8 + 32 // 8 for discriminator + 32 for pubkey
+        space = 8 + 32 + 32 + 1 // 8 for discriminator + 32 for pubkey + 32 for admin + 1 for paused
     )]
     pub state: Account<'info, State>,
     #[account(mut)]
@@ -108,6 +129,14 @@ pub struct Initialize<'info> {
 /// Accounts required for setting a new owner.
 #[derive(Accounts)]
 pub struct SetOwner<'info> {
+    #[account(mut)]
+    pub state: Account<'info, State>,
+    pub owner: Signer<'info>,
+}
+
+/// Accounts required for setting paused state
+#[derive(Accounts)]
+pub struct SetPaused<'info> {
     #[account(mut)]
     pub state: Account<'info, State>,
     pub owner: Signer<'info>,
@@ -155,4 +184,6 @@ pub enum TokenizerError {
     ZeroAmount,
     #[msg("Unauthorized")]
     Unauthorized,
+    #[msg("Contract is paused")]
+    Paused,
 }
