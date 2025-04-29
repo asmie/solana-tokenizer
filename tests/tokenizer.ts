@@ -14,49 +14,44 @@ describe("tokenizer", () => {
   const MINT_AMOUNT = new anchor.BN(1000);
   const BURN_AMOUNT = new anchor.BN(500);
 
-  it("Mints tokens", async () => {
-    // Create mint account
-    const mint = await createMint(
-      provider.connection,
-      provider.wallet.payer,
-      provider.wallet.publicKey,
-      provider.wallet.publicKey,
-      DECIMALS
-    );
+  let state: anchor.web3.Keypair;
+  let currentOwner: anchor.web3.PublicKey;
 
-    // Create associated token account
-    const tokenAccount = await createAssociatedTokenAccount(
-      provider.connection,
-      provider.wallet.payer,
-      mint,
-      provider.wallet.publicKey
-    );
-
+  before(async () => {
+    state = anchor.web3.Keypair.generate();
+    currentOwner = provider.wallet.publicKey;
     await program.methods
-      .mintTokens(MINT_AMOUNT)
+      .initialize()
       .accounts({
-        mint,
-        tokenAccount,
-        mintAuthority: provider.wallet.publicKey,
+        state: state.publicKey,
+        owner: currentOwner,
+        systemProgram: anchor.web3.SystemProgram.programId,
       })
+      .signers([state])
       .rpc();
-
-    // Check token account balance
-    const balance = await provider.connection.getTokenAccountBalance(tokenAccount);
-    expect(balance.value.amount).to.equal(MINT_AMOUNT.toString());
   });
 
-  it("Burns tokens", async () => {
-    // Create mint account
+  it("Sets new owner", async () => {
+    const newOwner = anchor.web3.Keypair.generate();
+    await program.methods
+      .setOwner(newOwner.publicKey)
+      .accounts({
+        state: state.publicKey,
+        owner: currentOwner,
+      })
+      .rpc();
+
+    currentOwner = newOwner.publicKey;
+
+    // Verify new owner can perform operations
     const mint = await createMint(
       provider.connection,
       provider.wallet.payer,
-      provider.wallet.publicKey,
-      provider.wallet.publicKey,
+      newOwner.publicKey,
+      newOwner.publicKey,
       DECIMALS
     );
 
-    // Create associated token account
     const tokenAccount = await createAssociatedTokenAccount(
       provider.connection,
       provider.wallet.payer,
@@ -64,29 +59,75 @@ describe("tokenizer", () => {
       provider.wallet.publicKey
     );
 
-    // First mint some tokens
     await program.methods
       .mintTokens(MINT_AMOUNT)
       .accounts({
+        state: state.publicKey,
         mint,
         tokenAccount,
-        mintAuthority: provider.wallet.publicKey,
+        mintAuthority: newOwner.publicKey,
       })
+      .signers([newOwner])
       .rpc();
 
-    // Then burn some tokens
+    // Reset owner back to original
     await program.methods
-      .burnTokens(BURN_AMOUNT)
+      .setOwner(provider.wallet.publicKey)
       .accounts({
+        state: state.publicKey,
+        owner: newOwner.publicKey,
+      })
+      .signers([newOwner])
+      .rpc();
+
+    currentOwner = provider.wallet.publicKey;
+  });
+
+  it("Fails to set owner with wrong authority", async () => {
+    const wrongAuthority = anchor.web3.Keypair.generate();
+    try {
+      await program.methods
+        .setOwner(wrongAuthority.publicKey)
+        .accounts({
+          state: state.publicKey,
+          owner: wrongAuthority.publicKey,
+        })
+        .signers([wrongAuthority])
+        .rpc();
+      expect.fail("Should have failed with wrong authority");
+    } catch (err) {
+      expect(err.toString()).to.include("Unauthorized");
+    }
+  });
+
+  it("Mints tokens", async () => {
+    const mint = await createMint(
+      provider.connection,
+      provider.wallet.payer,
+      currentOwner,
+      currentOwner,
+      DECIMALS
+    );
+
+    const tokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      provider.wallet.publicKey
+    );
+
+    await program.methods
+      .mintTokens(MINT_AMOUNT)
+      .accounts({
+        state: state.publicKey,
         mint,
         tokenAccount,
-        burnAuthority: provider.wallet.publicKey,
+        mintAuthority: currentOwner,
       })
       .rpc();
 
-    // Check token account balance
     const balance = await provider.connection.getTokenAccountBalance(tokenAccount);
-    expect(balance.value.amount).to.equal(MINT_AMOUNT.sub(BURN_AMOUNT).toString());
+    expect(balance.value.amount).to.equal(MINT_AMOUNT.toString());
   });
 
   it("Fails to mint tokens with wrong authority", async () => {
@@ -110,23 +151,25 @@ describe("tokenizer", () => {
       await program.methods
         .mintTokens(MINT_AMOUNT)
         .accounts({
+          state: state.publicKey,
           mint,
           tokenAccount,
           mintAuthority: wrongAuthority.publicKey,
         })
+        .signers([wrongAuthority])
         .rpc();
       expect.fail("Should have failed with wrong authority");
     } catch (err) {
-      expect(err.toString()).to.include("Error");
+      expect(err.toString()).to.include("Unauthorized");
     }
   });
 
-  it("Fails to burn tokens with insufficient balance", async () => {
+  it("Burns tokens", async () => {
     const mint = await createMint(
       provider.connection,
       provider.wallet.payer,
-      provider.wallet.publicKey,
-      provider.wallet.publicKey,
+      currentOwner,
+      currentOwner,
       DECIMALS
     );
 
@@ -137,18 +180,74 @@ describe("tokenizer", () => {
       provider.wallet.publicKey
     );
 
+    // First mint some tokens
+    await program.methods
+      .mintTokens(MINT_AMOUNT)
+      .accounts({
+        state: state.publicKey,
+        mint,
+        tokenAccount,
+        mintAuthority: currentOwner,
+      })
+      .rpc();
+
+    // Then burn some tokens
+    await program.methods
+      .burnTokens(BURN_AMOUNT)
+      .accounts({
+        state: state.publicKey,
+        mint,
+        tokenAccount,
+        burnAuthority: currentOwner,
+      })
+      .rpc();
+
+    const balance = await provider.connection.getTokenAccountBalance(tokenAccount);
+    expect(balance.value.amount).to.equal(MINT_AMOUNT.sub(BURN_AMOUNT).toString());
+  });
+
+  it("Fails to burn tokens with wrong authority", async () => {
+    const wrongAuthority = anchor.web3.Keypair.generate();
+    const mint = await createMint(
+      provider.connection,
+      provider.wallet.payer,
+      currentOwner,
+      currentOwner,
+      DECIMALS
+    );
+
+    const tokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      provider.wallet.publicKey
+    );
+
+    // First mint some tokens
+    await program.methods
+      .mintTokens(MINT_AMOUNT)
+      .accounts({
+        state: state.publicKey,
+        mint,
+        tokenAccount,
+        mintAuthority: currentOwner,
+      })
+      .rpc();
+
     try {
       await program.methods
         .burnTokens(BURN_AMOUNT)
         .accounts({
+          state: state.publicKey,
           mint,
           tokenAccount,
-          burnAuthority: provider.wallet.publicKey,
+          burnAuthority: wrongAuthority.publicKey,
         })
+        .signers([wrongAuthority])
         .rpc();
-      expect.fail("Should have failed with insufficient balance");
+      expect.fail("Should have failed with wrong authority");
     } catch (err) {
-      expect(err.toString()).to.include("Error");
+      expect(err.toString()).to.include("Unauthorized");
     }
   });
 
@@ -156,8 +255,8 @@ describe("tokenizer", () => {
     const mint = await createMint(
       provider.connection,
       provider.wallet.payer,
-      provider.wallet.publicKey,
-      provider.wallet.publicKey,
+      currentOwner,
+      currentOwner,
       DECIMALS
     );
 
@@ -175,9 +274,10 @@ describe("tokenizer", () => {
       await program.methods
         .mintTokens(amount)
         .accounts({
+          state: state.publicKey,
           mint,
           tokenAccount,
-          mintAuthority: provider.wallet.publicKey,
+          mintAuthority: currentOwner,
         })
         .rpc();
 
@@ -191,8 +291,8 @@ describe("tokenizer", () => {
     const mint = await createMint(
       provider.connection,
       provider.wallet.payer,
-      provider.wallet.publicKey,
-      provider.wallet.publicKey,
+      currentOwner,
+      currentOwner,
       DECIMALS
     );
 
@@ -208,9 +308,10 @@ describe("tokenizer", () => {
     await program.methods
       .mintTokens(initialAmount)
       .accounts({
+        state: state.publicKey,
         mint,
         tokenAccount,
-        mintAuthority: provider.wallet.publicKey,
+        mintAuthority: currentOwner,
       })
       .rpc();
 
@@ -221,9 +322,10 @@ describe("tokenizer", () => {
       await program.methods
         .burnTokens(amount)
         .accounts({
+          state: state.publicKey,
           mint,
           tokenAccount,
-          burnAuthority: provider.wallet.publicKey,
+          burnAuthority: currentOwner,
         })
         .rpc();
 
@@ -237,8 +339,8 @@ describe("tokenizer", () => {
     const mint = await createMint(
       provider.connection,
       provider.wallet.payer,
-      provider.wallet.publicKey,
-      provider.wallet.publicKey,
+      currentOwner,
+      currentOwner,
       DECIMALS
     );
 
@@ -253,14 +355,33 @@ describe("tokenizer", () => {
       await program.methods
         .mintTokens(new anchor.BN(0))
         .accounts({
+          state: state.publicKey,
           mint,
           tokenAccount,
-          mintAuthority: provider.wallet.publicKey,
+          mintAuthority: currentOwner,
         })
         .rpc();
       expect.fail("Should have failed with zero amount");
     } catch (err) {
-      expect(err.toString()).to.include("Error");
+      if (err.toString().includes("Blockhash not found")) {
+        // Retry once if it's a connection issue
+        try {
+          await program.methods
+            .mintTokens(new anchor.BN(0))
+            .accounts({
+              state: state.publicKey,
+              mint,
+              tokenAccount,
+              mintAuthority: currentOwner,
+            })
+            .rpc();
+          expect.fail("Should have failed with zero amount");
+        } catch (retryErr) {
+          expect(retryErr.toString()).to.include("ZeroAmount");
+        }
+      } else {
+        expect(err.toString()).to.include("ZeroAmount");
+      }
     }
   });
 
@@ -268,8 +389,8 @@ describe("tokenizer", () => {
     const mint = await createMint(
       provider.connection,
       provider.wallet.payer,
-      provider.wallet.publicKey,
-      provider.wallet.publicKey,
+      currentOwner,
+      currentOwner,
       DECIMALS
     );
 
@@ -284,9 +405,10 @@ describe("tokenizer", () => {
     await program.methods
       .mintTokens(MINT_AMOUNT)
       .accounts({
+        state: state.publicKey,
         mint,
         tokenAccount,
-        mintAuthority: provider.wallet.publicKey,
+        mintAuthority: currentOwner,
       })
       .rpc();
 
@@ -294,14 +416,33 @@ describe("tokenizer", () => {
       await program.methods
         .burnTokens(new anchor.BN(0))
         .accounts({
+          state: state.publicKey,
           mint,
           tokenAccount,
-          burnAuthority: provider.wallet.publicKey,
+          burnAuthority: currentOwner,
         })
         .rpc();
       expect.fail("Should have failed with zero amount");
     } catch (err) {
-      expect(err.toString()).to.include("Error");
+      if (err.toString().includes("Blockhash not found")) {
+        // Retry once if it's a connection issue
+        try {
+          await program.methods
+            .burnTokens(new anchor.BN(0))
+            .accounts({
+              state: state.publicKey,
+              mint,
+              tokenAccount,
+              burnAuthority: currentOwner,
+            })
+            .rpc();
+          expect.fail("Should have failed with zero amount");
+        } catch (retryErr) {
+          expect(retryErr.toString()).to.include("ZeroAmount");
+        }
+      } else {
+        expect(err.toString()).to.include("ZeroAmount");
+      }
     }
   });
 }); 

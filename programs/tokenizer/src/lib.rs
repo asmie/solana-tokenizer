@@ -7,6 +7,22 @@ declare_id!("97p5HxyC14H8f9ykCVLiB4giqnzw3oEYo6sTGjKVsP8a");
 pub mod tokenizer {
     use super::*;
 
+    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+        let state = &mut ctx.accounts.state;
+        state.owner = ctx.accounts.owner.key();
+        Ok(())
+    }
+
+    pub fn set_owner(ctx: Context<SetOwner>, new_owner: Pubkey) -> Result<()> {
+        let state = &mut ctx.accounts.state;
+        require!(
+            state.owner == ctx.accounts.owner.key(),
+            TokenizerError::Unauthorized
+        );
+        state.owner = new_owner;
+        Ok(())
+    }
+
     /// Mints new tokens to a specified token account.
     ///
     /// # Arguments
@@ -18,11 +34,12 @@ pub mod tokenizer {
     /// * The mint authority is not a signer
     /// * The token account is not associated with the mint
     /// * The token program call fails
-    pub fn mint_tokens(
-        ctx: Context<MintTokens>,
-        amount: u64,
-    ) -> Result<()> {
+    pub fn mint_tokens(ctx: Context<MintTokens>, amount: u64) -> Result<()> {
         require!(amount > 0, TokenizerError::ZeroAmount);
+        require!(
+            ctx.accounts.state.owner == ctx.accounts.mint_authority.key(),
+            TokenizerError::Unauthorized
+        );
 
         let cpi_accounts = token::MintTo {
             mint: ctx.accounts.mint.to_account_info(),
@@ -48,11 +65,12 @@ pub mod tokenizer {
     /// * The burn authority is not a signer
     /// * The token account has insufficient balance
     /// * The token program call fails
-    pub fn burn_tokens(
-        ctx: Context<BurnTokens>,
-        amount: u64,
-    ) -> Result<()> {
+    pub fn burn_tokens(ctx: Context<BurnTokens>, amount: u64) -> Result<()> {
         require!(amount > 0, TokenizerError::ZeroAmount);
+        require!(
+            ctx.accounts.state.owner == ctx.accounts.burn_authority.key(),
+            TokenizerError::Unauthorized
+        );
 
         let cpi_accounts = token::Burn {
             mint: ctx.accounts.mint.to_account_info(),
@@ -68,9 +86,38 @@ pub mod tokenizer {
     }
 }
 
+#[account]
+pub struct State {
+    pub owner: Pubkey,
+}
+
+/// Accounts required for initializing the contract.
+#[derive(Accounts)]
+pub struct Initialize<'info> {
+    #[account(
+        init,
+        payer = owner,
+        space = 8 + 32 // 8 for discriminator + 32 for pubkey
+    )]
+    pub state: Account<'info, State>,
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+/// Accounts required for setting a new owner.
+#[derive(Accounts)]
+pub struct SetOwner<'info> {
+    #[account(mut)]
+    pub state: Account<'info, State>,
+    pub owner: Signer<'info>,
+}
+
 /// Accounts required for minting new tokens.
 #[derive(Accounts)]
 pub struct MintTokens<'info> {
+    #[account(mut)]
+    pub state: Account<'info, State>,
     /// The mint account
     #[account(mut)]
     pub mint: Account<'info, Mint>,
@@ -87,6 +134,8 @@ pub struct MintTokens<'info> {
 /// Accounts required for burning tokens.
 #[derive(Accounts)]
 pub struct BurnTokens<'info> {
+    #[account(mut)]
+    pub state: Account<'info, State>,
     /// The mint account
     #[account(mut)]
     pub mint: Account<'info, Mint>,
@@ -104,4 +153,6 @@ pub struct BurnTokens<'info> {
 pub enum TokenizerError {
     #[msg("Amount must be greater than zero")]
     ZeroAmount,
+    #[msg("Unauthorized")]
+    Unauthorized,
 }
