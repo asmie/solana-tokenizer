@@ -73,6 +73,21 @@ pub struct RemoveBurnerEvent {
     pub timestamp: i64,
 }
 
+/// Event emitted when tokens are transferred
+#[event]
+pub struct TransferEvent {
+    /// The token account sending the tokens
+    pub from: Pubkey,
+    /// The token account receiving the tokens
+    pub to: Pubkey,
+    /// The amount of tokens transferred
+    pub amount: u64,
+    /// The timestamp when the transfer occurred
+    pub timestamp: i64,
+    /// The authority that authorized the transfer
+    pub authority: Pubkey,
+}
+
 #[program]
 pub mod tokenizer {
     use super::*;
@@ -312,6 +327,44 @@ pub mod tokenizer {
         Ok(())
     }
 
+    /// Transfers tokens from one token account to another.
+    ///
+    /// # Arguments
+    /// * `ctx` - The context containing the from/to token accounts and authority
+    /// * `amount` - The number of tokens to transfer (in base units)
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// * The amount is zero
+    /// * The contract is paused
+    /// * The authority does not own the from token account
+    /// * The token program call fails
+    pub fn transfer_tokens(ctx: Context<TransferTokens>, amount: u64) -> Result<()> {
+        require!(amount > 0, TokenizerError::ZeroAmount);
+        let state = &ctx.accounts.state;
+        require!(!state.paused, TokenizerError::Paused);
+
+        let cpi_accounts = token::Transfer {
+            from: ctx.accounts.from_token_account.to_account_info(),
+            to: ctx.accounts.to_token_account.to_account_info(),
+            authority: ctx.accounts.transfer_authority.to_account_info(),
+        };
+
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        token::transfer(cpi_ctx, amount)?;
+
+        emit!(TransferEvent {
+            from: ctx.accounts.from_token_account.key(),
+            to: ctx.accounts.to_token_account.key(),
+            amount,
+            timestamp: Clock::get()?.unix_timestamp,
+            authority: ctx.accounts.transfer_authority.key(),
+        });
+
+        Ok(())
+    }
+
     /// Sets the paused state of the contract.
     ///
     /// # Arguments
@@ -430,6 +483,23 @@ pub struct BurnTokens<'info> {
     pub burn_authority: Signer<'info>,
     /// The SPL Token program
     /// CHECK: This is the token program
+    pub token_program: Program<'info, Token>,
+}
+
+/// Accounts required for transferring tokens.
+#[derive(Accounts)]
+pub struct TransferTokens<'info> {
+    #[account(mut)]
+    pub state: Account<'info, State>,
+    /// The token account to transfer tokens from
+    #[account(mut)]
+    pub from_token_account: Account<'info, TokenAccount>,
+    /// The token account to transfer tokens to
+    #[account(mut)]
+    pub to_token_account: Account<'info, TokenAccount>,
+    /// The transfer authority (must be a signer and owner of from_token_account)
+    pub transfer_authority: Signer<'info>,
+    /// The SPL Token program
     pub token_program: Program<'info, Token>,
 }
 

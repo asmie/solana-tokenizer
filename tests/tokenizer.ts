@@ -832,4 +832,347 @@ describe("tokenizer", () => {
       expect(err.toString()).to.include("AlreadyExists");
     }
   });
+
+  it("Transfers tokens between accounts", async () => {
+    const mint = await createMint(
+      provider.connection,
+      provider.wallet.payer,
+      currentOwner,
+      currentOwner,
+      DECIMALS
+    );
+
+    const fromTokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      provider.wallet.publicKey
+    );
+
+    const recipient = anchor.web3.Keypair.generate();
+    const toTokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      recipient.publicKey
+    );
+
+    // First mint some tokens to the from account
+    await program.methods
+      .mintTokens(MINT_AMOUNT)
+      .accounts({
+        state: state.publicKey,
+        mint,
+        tokenAccount: fromTokenAccount,
+        mintAuthority: currentOwner,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc();
+
+    // Transfer tokens
+    const transferAmount = new anchor.BN(300);
+    await program.methods
+      .transferTokens(transferAmount)
+      .accounts({
+        state: state.publicKey,
+        fromTokenAccount,
+        toTokenAccount,
+        transferAuthority: provider.wallet.publicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc();
+
+    const fromBalance = await provider.connection.getTokenAccountBalance(fromTokenAccount);
+    const toBalance = await provider.connection.getTokenAccountBalance(toTokenAccount);
+
+    expect(fromBalance.value.amount).to.equal(MINT_AMOUNT.sub(transferAmount).toString());
+    expect(toBalance.value.amount).to.equal(transferAmount.toString());
+  });
+
+  it("Transfers tokens with event", async () => {
+    const mint = await createMint(
+      provider.connection,
+      provider.wallet.payer,
+      currentOwner,
+      currentOwner,
+      DECIMALS
+    );
+
+    const fromTokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      provider.wallet.publicKey
+    );
+
+    const recipient = anchor.web3.Keypair.generate();
+    const toTokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      recipient.publicKey
+    );
+
+    // First mint some tokens
+    await program.methods
+      .mintTokens(MINT_AMOUNT)
+      .accounts({
+        state: state.publicKey,
+        mint,
+        tokenAccount: fromTokenAccount,
+        mintAuthority: currentOwner,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc();
+
+    // Transfer and verify event
+    const transferAmount = new anchor.BN(400);
+    const tx = await program.methods
+      .transferTokens(transferAmount)
+      .accounts({
+        state: state.publicKey,
+        fromTokenAccount,
+        toTokenAccount,
+        transferAuthority: provider.wallet.publicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc();
+
+    const event = await getEventFromTransaction(tx, program, "transferEvent");
+    expect(event.data.from.equals(fromTokenAccount)).to.be.true;
+    expect(event.data.to.equals(toTokenAccount)).to.be.true;
+    expect(event.data.amount.toString()).to.equal(transferAmount.toString());
+    expect(event.data.authority.equals(provider.wallet.publicKey)).to.be.true;
+  });
+
+  it("Transfers tokens with different amounts", async () => {
+    const mint = await createMint(
+      provider.connection,
+      provider.wallet.payer,
+      currentOwner,
+      currentOwner,
+      DECIMALS
+    );
+
+    const fromTokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      provider.wallet.publicKey
+    );
+
+    const recipient = anchor.web3.Keypair.generate();
+    const toTokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      recipient.publicKey
+    );
+
+    // Mint a large amount
+    const initialAmount = new anchor.BN(10000);
+    await program.methods
+      .mintTokens(initialAmount)
+      .accounts({
+        state: state.publicKey,
+        mint,
+        tokenAccount: fromTokenAccount,
+        mintAuthority: currentOwner,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc();
+
+    const transferAmounts = [new anchor.BN(1), new anchor.BN(100), new anchor.BN(1000)];
+    let remainingBalance = initialAmount;
+    let recipientBalance = new anchor.BN(0);
+
+    for (const amount of transferAmounts) {
+      await program.methods
+        .transferTokens(amount)
+        .accounts({
+          state: state.publicKey,
+          fromTokenAccount,
+          toTokenAccount,
+          transferAuthority: provider.wallet.publicKey,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .rpc();
+
+      remainingBalance = remainingBalance.sub(amount);
+      recipientBalance = recipientBalance.add(amount);
+
+      const fromBalance = await provider.connection.getTokenAccountBalance(fromTokenAccount);
+      const toBalance = await provider.connection.getTokenAccountBalance(toTokenAccount);
+
+      expect(fromBalance.value.amount).to.equal(remainingBalance.toString());
+      expect(toBalance.value.amount).to.equal(recipientBalance.toString());
+    }
+  });
+
+  it("Fails to transfer zero tokens", async () => {
+    const mint = await createMint(
+      provider.connection,
+      provider.wallet.payer,
+      currentOwner,
+      currentOwner,
+      DECIMALS
+    );
+
+    const fromTokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      provider.wallet.publicKey
+    );
+
+    const recipient = anchor.web3.Keypair.generate();
+    const toTokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      recipient.publicKey
+    );
+
+    // First mint some tokens
+    await program.methods
+      .mintTokens(MINT_AMOUNT)
+      .accounts({
+        state: state.publicKey,
+        mint,
+        tokenAccount: fromTokenAccount,
+        mintAuthority: currentOwner,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc();
+
+    try {
+      await program.methods
+        .transferTokens(new anchor.BN(0))
+        .accounts({
+          state: state.publicKey,
+          fromTokenAccount,
+          toTokenAccount,
+          transferAuthority: provider.wallet.publicKey,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .rpc();
+      expect.fail("Should have failed with zero amount");
+    } catch (err) {
+      expect(err.toString()).to.include("ZeroAmount");
+    }
+  });
+
+  it("Fails to transfer when paused", async () => {
+    // Pause the contract
+    await program.methods
+      .setPaused(true)
+      .accounts({
+        state: state.publicKey,
+        owner: currentOwner,
+      })
+      .rpc();
+
+    const mint = await createMint(
+      provider.connection,
+      provider.wallet.payer,
+      currentOwner,
+      currentOwner,
+      DECIMALS
+    );
+
+    const fromTokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      provider.wallet.publicKey
+    );
+
+    const recipient = anchor.web3.Keypair.generate();
+    const toTokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      recipient.publicKey
+    );
+
+    try {
+      await program.methods
+        .transferTokens(new anchor.BN(100))
+        .accounts({
+          state: state.publicKey,
+          fromTokenAccount,
+          toTokenAccount,
+          transferAuthority: provider.wallet.publicKey,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .rpc();
+      expect.fail("Should have failed when paused");
+    } catch (err) {
+      expect(err.toString()).to.include("Paused");
+    }
+
+    // Unpause for other tests
+    await program.methods
+      .setPaused(false)
+      .accounts({
+        state: state.publicKey,
+        owner: currentOwner,
+      })
+      .rpc();
+  });
+
+  it("Fails to transfer with insufficient balance", async () => {
+    const mint = await createMint(
+      provider.connection,
+      provider.wallet.payer,
+      currentOwner,
+      currentOwner,
+      DECIMALS
+    );
+
+    const fromTokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      provider.wallet.publicKey
+    );
+
+    const recipient = anchor.web3.Keypair.generate();
+    const toTokenAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mint,
+      recipient.publicKey
+    );
+
+    // Mint only a small amount
+    const smallAmount = new anchor.BN(100);
+    await program.methods
+      .mintTokens(smallAmount)
+      .accounts({
+        state: state.publicKey,
+        mint,
+        tokenAccount: fromTokenAccount,
+        mintAuthority: currentOwner,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc();
+
+    // Try to transfer more than balance
+    try {
+      await program.methods
+        .transferTokens(new anchor.BN(1000))
+        .accounts({
+          state: state.publicKey,
+          fromTokenAccount,
+          toTokenAccount,
+          transferAuthority: provider.wallet.publicKey,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .rpc();
+      expect.fail("Should have failed with insufficient balance");
+    } catch (err) {
+      expect(err).to.exist;
+    }
+  });
 }); 
